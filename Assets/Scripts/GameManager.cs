@@ -7,7 +7,7 @@ public class GameManager : MonoBehaviour
     public Shader[] shaderRefs; // 빌드에서 셰이더가 제거되지 않도록 씬에 참조 보관
 
     class FruitDef { public string name; public Color outer, inner; public float r; public Vector3 shape = Vector3.one; }
-    class Item { public Transform t; public FruitDef d; public float spin; }
+    class Item { public Transform t; public FruitDef d; public float spin; public Vector3 size; public bool sliced; }
     class Fx { public Transform t; public float born, life; public Vector3 s0; }
     class Pop { public string text; public Vector3 pos; public float born; public Color col; }
     class KnifeDef { public string name; public Vector3 blade; public Color bladeCol, handleCol; public float metal, pitch; }
@@ -29,9 +29,10 @@ public class GameManager : MonoBehaviour
     GameObject knifeGO; int knifeIdx;
     float knifeT = -1, knifeX; bool pendingCut;
     float spawnTimer, speed = 2.2f, lastSlice;
-    int score, combo; bool soundOn = true;
+    float spawnInterval = 1.5f;
+    int score, combo, perfectSliceCount; bool soundOn = true;
 
-    float uiScale = 1, vw; Rect knifeBtn, soundBtn;
+    float uiScale = 1, vw; Rect knifeBtn, soundBtn, slowerBtn, fasterBtn, intervalSlider;
     GUIStyle big, mid, btn;
 
     const float RailTop = 0.09f;
@@ -60,6 +61,7 @@ public class GameManager : MonoBehaviour
             new KnifeDef{ name="Ice Blade",   blade=new Vector3(0.04f,0.45f,1.5f), bladeCol=C(0x9FE8FF), handleCol=C(0xFFFFFF), metal=0.3f, pitch=1.5f },
         };
 
+        spawnInterval = PlayerPrefs.GetFloat("HealingSlices.SpawnInterval", 1.0f);
         SetupScene();
         SetupAudio();
         BuildKnife();
@@ -181,20 +183,141 @@ public class GameManager : MonoBehaviour
     }
 
     // ───────── 과일 ─────────
+    void AddDetail(Transform parent, PrimitiveType type, Vector3 scale, Vector3 localPos, Color color, float gloss = 0.35f)
+    {
+        var detail = Prim(type, scale, Mat(color, gloss), parent.position + localPos, false);
+        detail.transform.SetParent(parent, true);
+        detail.transform.localPosition = localPos;
+    }
+
+    void BuildFruitAppearance(Transform root, FruitDef d)
+    {
+        // Distinct silhouettes and small botanical details; all meshes are generated from Unity primitives.
+        Color dark = Color.Lerp(d.outer, Color.black, 0.22f);
+        Color leaf = C(0x3C8C42);
+        string n = d.name;
+        if (n == "Apple")
+        {
+            AddDetail(root, PrimitiveType.Sphere, new Vector3(.13f,.10f,.12f), new Vector3(0,.48f,0), C(0x6D3B20));
+            AddDetail(root, PrimitiveType.Sphere, new Vector3(.20f,.055f,.10f), new Vector3(.12f,.52f,0), leaf);
+        }
+        else if (n == "Orange" || n == "Lime")
+        {
+            AddDetail(root, PrimitiveType.Sphere, new Vector3(.12f,.055f,.12f), new Vector3(0,.50f,0), dark);
+            AddDetail(root, PrimitiveType.Sphere, new Vector3(.10f,.04f,.10f), new Vector3(0,-.50f,0), dark);
+        }
+        else if (n == "Lemon")
+        {
+            AddDetail(root, PrimitiveType.Sphere, new Vector3(.14f,.12f,.12f), new Vector3(.60f,0,0), d.outer);
+            AddDetail(root, PrimitiveType.Sphere, new Vector3(.14f,.12f,.12f), new Vector3(-.60f,0,0), d.outer);
+            AddDetail(root, PrimitiveType.Sphere, new Vector3(.16f,.045f,.09f), new Vector3(-.1f,.43f,0), leaf);
+        }
+        else if (n == "Watermelon")
+        {
+            // Alternating dark-green longitudinal bands make the melon visibly striped.
+            for (int i=0;i<7;i++)
+            {
+                float a = i * Mathf.PI * 2f / 7f;
+                AddDetail(root, PrimitiveType.Sphere, new Vector3(.12f,1.18f,.10f),
+                    new Vector3(Mathf.Cos(a)*.55f,0,Mathf.Sin(a)*.55f), dark);
+            }
+        }
+        else if (n == "Kiwi")
+        {
+            AddDetail(root, PrimitiveType.Sphere, new Vector3(.12f,.08f,.12f), new Vector3(0,.40f,0), C(0x5C3A22));
+            for (int i=0;i<9;i++)
+            {
+                float a=i*Mathf.PI*2f/9f;
+                AddDetail(root, PrimitiveType.Sphere, new Vector3(.035f,.035f,.035f),
+                    new Vector3(Mathf.Cos(a)*.43f,Mathf.Sin(a)*.2f,Mathf.Sin(a)*.43f), C(0xC5A16A));
+            }
+        }
+        else if (n == "Peach")
+        {
+            AddDetail(root, PrimitiveType.Sphere, new Vector3(.025f,.68f,.025f), new Vector3(.25f,0,.43f), C(0xD96F69));
+            AddDetail(root, PrimitiveType.Sphere, new Vector3(.18f,.06f,.10f), new Vector3(-.08f,.48f,0), leaf);
+        }
+        else if (n == "Plum")
+        {
+            AddDetail(root, PrimitiveType.Sphere, new Vector3(.09f,.18f,.09f), new Vector3(0,.50f,0), C(0x6D482B));
+            AddDetail(root, PrimitiveType.Sphere, new Vector3(.16f,.045f,.09f), new Vector3(.12f,.55f,0), leaf);
+        }
+        else if (n == "Dragonfruit")
+        {
+            // Pink bracts with green tips around the body.
+            for (int i=0;i<10;i++)
+            {
+                float a=i*Mathf.PI*2f/10f;
+                Vector3 pos = new Vector3(Mathf.Cos(a)*.42f, Mathf.Sin(a)*.30f, Mathf.Sin(a)*.42f);
+                AddDetail(root, PrimitiveType.Sphere, new Vector3(.14f,.07f,.07f), pos, C(0x36A852));
+            }
+            AddDetail(root, PrimitiveType.Sphere, new Vector3(.10f,.10f,.10f), new Vector3(0,.50f,0), leaf);
+        }
+    }
+
+
+    // Deform a sphere mesh into recognizable fruit silhouettes instead of using perfect balls.
+    Mesh MakeFruitMesh(FruitDef d)
+    {
+        var source = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        Mesh mesh = Instantiate(source.GetComponent<MeshFilter>().sharedMesh);
+        Destroy(source);
+        var vertices = mesh.vertices;
+        for (int i = 0; i < vertices.Length; i++)
+        {
+            Vector3 v = vertices[i];
+            float y = v.y;
+            float radial = 1f;
+            switch (d.name)
+            {
+                case "Apple":
+                    radial *= 1f - 0.14f * Mathf.Pow(Mathf.Abs(y), 5f);
+                    if (y > 0.65f) radial *= 1f - 0.12f * ((y - 0.65f) / 0.35f);
+                    v.y *= 0.92f; break;
+                case "Orange": case "Lime":
+                    radial *= 1f - 0.07f * Mathf.Abs(y);
+                    v.y *= 0.92f; break;
+                case "Lemon":
+                    radial *= 1f - 0.28f * Mathf.Pow(Mathf.Abs(v.x), 3f);
+                    v.x *= 1.12f; v.y *= 0.82f; break;
+                case "Watermelon": v.x *= 1.18f; v.y *= 0.92f; v.z *= 0.94f; break;
+                case "Kiwi": v.x *= 1.12f; v.y *= 0.88f; v.z *= 1.02f; break;
+                case "Peach":
+                    radial *= 1f - 0.06f * Mathf.Abs(y);
+                    v.y *= 0.91f;
+                    v.x *= 1f + 0.035f * Mathf.Cos(v.y * 4f); break;
+                case "Plum": v.y *= 1.13f; v.x *= 0.88f; v.z *= 0.88f; break;
+                case "Dragonfruit":
+                    radial *= 1f + 0.055f * Mathf.Sin(Mathf.Atan2(v.z, v.x) * 7f + y * 2f);
+                    v.y *= 0.94f; break;
+            }
+            v.x *= radial; v.z *= radial;
+            vertices[i] = v;
+        }
+        mesh.vertices = vertices; mesh.RecalculateNormals(); mesh.RecalculateBounds();
+        return mesh;
+    }
+
     void Spawn(float x)
     {
         var d = fruits[Random.Range(0, fruits.Length)];
         float y = RailTop + Mathf.Sqrt(d.r * d.r - 0.09f) * d.shape.y;
-        var g = Prim(PrimitiveType.Sphere, d.r * 2f * d.shape, Mat(d.outer, 0.55f), new Vector3(x, y, 0), false);
+        var g = new GameObject(d.name);
+        g.transform.position = new Vector3(x, y, 0);
+        var body = Prim(PrimitiveType.Sphere, d.r * 2f * d.shape, Mat(d.outer, 0.68f), g.transform.position, false);
+        body.GetComponent<MeshFilter>().mesh = MakeFruitMesh(d);
+        body.transform.SetParent(g.transform, true);
+        BuildFruitAppearance(g.transform, d);
         g.transform.rotation = Quaternion.Euler(Random.Range(0, 360f), 0, 0);
-        items.Add(new Item { t = g.transform, d = d, spin = Random.Range(-25f, 25f) });
+        items.Add(new Item { t = g.transform, d = d, spin = Random.Range(-25f, 25f), size = d.r * d.shape, sliced = false });
     }
 
     void Slice(Item it, float cutX)
     {
-        var d = it.d; Vector3 sc = d.r * d.shape; Vector3 pos = it.t.position; Quaternion rot = it.t.rotation;
+        var d = it.d; Vector3 sc = it.size; Vector3 pos = it.t.position; Quaternion rot = it.t.rotation;
         float c = Mathf.Clamp((cutX - pos.x) / sc.x, -0.8f, 0.8f);
         bool perfect = Mathf.Abs(c) < 0.1f;
+        if (perfect) perfectSliceCount++;
         var om = Mat(d.outer, 0.55f); var im = Mat(d.inner, 0.35f); var rm = Mat(Color.Lerp(d.outer, d.inner, 0.45f), 0.3f);
 
         GameObject a = Piece(Cap(c), pos, rot, sc, om, im, rm);
@@ -206,6 +329,9 @@ public class GameManager : MonoBehaviour
         ra.angularVelocity = new Vector3(0, 0, -Random.Range(1f, 3.5f));
         rb.angularVelocity = new Vector3(0, 0, Random.Range(1f, 3.5f));
         AddFx(a.transform, 4f); AddFx(b.transform, 4f);
+        // Sliceable pieces remain targetable, so the same fruit can be cut repeatedly.
+        items.Add(new Item { t = a.transform, d = d, spin = 0, size = sc, sliced = true });
+        items.Add(new Item { t = b.transform, d = d, spin = 0, size = sc, sliced = true });
 
         // 과일 파편
         for (int i = 0; i < 10; i++)
@@ -256,12 +382,22 @@ public class GameManager : MonoBehaviour
 
     void AddFx(Transform t, float life) { fxs.Add(new Fx { t = t, born = Time.time, life = life, s0 = t.localScale }); }
 
+    void SetSpawnInterval(float value)
+    {
+        spawnInterval = Mathf.Clamp(value, 0.15f, 3.0f);
+        PlayerPrefs.SetFloat("HealingSlices.SpawnInterval", spawnInterval);
+        PlayerPrefs.Save();
+    }
+
     // ───────── 입력 ─────────
     void Layout()
     {
         uiScale = Screen.height / 600f; vw = Screen.width / uiScale;
         knifeBtn = new Rect(vw - 330, 16, 310, 58);
         soundBtn = new Rect(vw - 330, 84, 310, 58);
+        slowerBtn = new Rect(vw - 330, 152, 145, 54);
+        fasterBtn = new Rect(vw - 177, 152, 157, 54);
+        intervalSlider = new Rect(vw - 320, 250, 290, 30);
     }
 
     void Tap(Vector2 sp)
@@ -270,6 +406,9 @@ public class GameManager : MonoBehaviour
         var v = new Vector2(sp.x / uiScale, (Screen.height - sp.y) / uiScale);
         if (knifeBtn.Contains(v)) { knifeIdx = (knifeIdx + 1) % knives.Length; BuildKnife(); return; }
         if (soundBtn.Contains(v)) { soundOn = !soundOn; music.mute = !soundOn; return; }
+        if (slowerBtn.Contains(v)) { SetSpawnInterval(spawnInterval + 0.1f); return; }
+        if (fasterBtn.Contains(v)) { SetSpawnInterval(spawnInterval - 0.1f); return; }
+        if (intervalSlider.Contains(v)) { SetSpawnInterval(Mathf.Lerp(0.15f, 3.0f, Mathf.Clamp01((v.x - intervalSlider.x) / intervalSlider.width))); return; }
 
         var ray = cam.ScreenPointToRay(sp);
         var plane = new Plane(Vector3.up, new Vector3(0, 0.7f, 0));
@@ -282,10 +421,11 @@ public class GameManager : MonoBehaviour
     void DoCut(float x)
     {
         pendingCut = false;
-        for (int i = items.Count - 1; i >= 0; i--)
+        int count = items.Count; // don't re-slice newly created pieces during this same swipe
+        for (int i = count - 1; i >= 0; i--)
         {
             var it = items[i];
-            if (Mathf.Abs(x - it.t.position.x) < it.d.r * it.d.shape.x * 0.97f) Slice(it, x);
+            if (it.t != null && Mathf.Abs(x - it.t.position.x) < it.size.x * 0.97f) Slice(it, x);
         }
     }
 
@@ -298,13 +438,16 @@ public class GameManager : MonoBehaviour
         else if (Input.GetMouseButtonDown(0)) Tap(Input.mousePosition);
 
         spawnTimer -= dt;
-        if (spawnTimer <= 0) { Spawn(-7f); spawnTimer = Random.Range(1.1f, 1.9f); }
+        if (spawnTimer <= 0) { Spawn(-7f); spawnTimer = Random.Range(spawnInterval * 0.85f, spawnInterval * 1.15f); }
 
         for (int i = items.Count - 1; i >= 0; i--)
         {
             var it = items[i];
-            it.t.position += Vector3.right * speed * dt;
-            it.t.Rotate(Vector3.right * it.spin * dt, Space.World);
+            if (!it.sliced)
+            {
+                it.t.position += Vector3.right * speed * dt;
+                it.t.Rotate(Vector3.right * it.spin * dt, Space.World);
+            }
             if (it.t.position.x > 9f) { Destroy(it.t.gameObject); items.RemoveAt(i); }
         }
         foreach (var p in planks)
@@ -352,8 +495,14 @@ public class GameManager : MonoBehaviour
         GUI.matrix = Matrix4x4.Scale(new Vector3(uiScale, uiScale, 1));
         Lbl(new Rect(24, 14, 500, 56), "SCORE " + score, big, Color.white);
         if (combo > 1) Lbl(new Rect(24, 62, 500, 56), "COMBO x" + combo, big, C(0xFFE14D));
+        Lbl(new Rect(24, 108, 520, 42), "PERFECT SLICES  " + perfectSliceCount, new GUIStyle(big) { fontSize = 27 }, C(0xFFE14D));
         GUI.Button(knifeBtn, "Knife: " + knives[knifeIdx].name, btn);
         GUI.Button(soundBtn, "Sound: " + (soundOn ? "ON" : "OFF"), btn);
+        GUI.Button(slowerBtn, "Less often", btn);
+        GUI.Button(fasterBtn, "More often", btn);
+        Lbl(new Rect(vw - 330, 205, 310, 34), "Spawn interval: " + spawnInterval.ToString("0.00") + "s", btn, Color.white);
+        float newInterval = GUI.HorizontalSlider(intervalSlider, spawnInterval, 0.15f, 3.0f);
+        if (Mathf.Abs(newInterval - spawnInterval) > 0.015f) SetSpawnInterval(newInterval);
         if (Time.timeSinceLevelLoad < 8f) Lbl(new Rect(0, 520, vw, 60), "Tap the screen to slice!", mid, Color.white);
         foreach (var p in pops)
         {
